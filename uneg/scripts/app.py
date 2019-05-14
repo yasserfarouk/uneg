@@ -153,9 +153,9 @@ def evaluate_ranking(n_ufuns, name, method, degree, fraction, outcomes, u, w
                 continue
             ufun = RankingLAPUfunLearner(issues=issue_list, outcomes=outcomes, kind=method
                                          , degree=degree)
-            strt = time.perf_counter_ns()
+            strt = time.perf_counter()
             ufun.fit(ranking)
-            duration = time.perf_counter_ns() - strt
+            duration = time.perf_counter() - strt
             if ufun.fitted:
                 rerror = ufun.ranking_error(gt)
                 verror_mean, verror_std = ufun.value_error(gt)

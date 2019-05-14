@@ -10,7 +10,7 @@ import negmas.utilities as util
 @pytest.mark.parametrize(("ascending",), [(True,), (False,)])
 def test_ranking(ascending):
     issues = [Issue(5, "Price"), Issue(5, "Distance")]
-    outcomes = Issue.enumerate(issues)
+    outcomes = Issue.enumerate(issues, astype=tuple)
     ufun = util.UtilityFunction.generate_random(1, outcomes=outcomes)[0]
 
     rank = ranking(ufun, outcomes, ascending=ascending)
@@ -40,7 +40,7 @@ def test_ranking(ascending):
 )
 def test_partial_ranking(ascending, fraction):
     issues = [Issue(5, "Price"), Issue(5, "Distance")]
-    outcomes = Issue.enumerate(issues)
+    outcomes = Issue.enumerate(issues, astype=tuple)
     ufun = util.UtilityFunction.generate_random(1, outcomes=outcomes)[0]
 
     rank = partial(ranking(ufun, outcomes, ascending=ascending), fraction)
