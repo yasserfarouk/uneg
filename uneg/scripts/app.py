@@ -1,8 +1,12 @@
+import math
 import os
 import random
 import time
+import traceback
+from concurrent.futures import Future, ProcessPoolExecutor, as_completed, TimeoutError
 
 from negmas import Issue
+from negmas.helpers import add_records
 from sklearn.gaussian_process.kernels import Matern
 
 random.seed(0)
@@ -130,6 +134,56 @@ def gp(
         print("", end="\n", flush=True)
 
 
+ufuns, issues = [], []
+
+
+def evaluate_ranking(n_ufuns, name, method, degree, fraction, outcomes, u, w
+                     , n_rankings_to_run, n_trials_per_ranking, results_file_name, i):
+    gt, issue_list = ufuns[i], issues[i]
+    results = []
+    for _ in range(n_rankings_to_run):
+        if fraction in (0.0, 1.0) and _ > 0:
+            continue
+        for __ in range(n_trials_per_ranking):
+            ranking = generate_ranking(ufun=gt, outcomes=outcomes
+                                       , uniform_noise=u, white_noise=w
+                                       , fraction=fraction)
+            if len(ranking) < 2:
+                print(" Cancelled (too small fraction)")
+                continue
+            ufun = RankingLAPUfunLearner(issues=issue_list, outcomes=outcomes, kind=method
+                                         , degree=degree)
+            strt = time.perf_counter_ns()
+            ufun.fit(ranking)
+            duration = time.perf_counter_ns() - strt
+            if ufun.fitted:
+                rerror = ufun.ranking_error(gt)
+                verror_mean, verror_std = ufun.value_error(gt)
+            else:
+                rerror = float('nan')
+                verror_mean, verror_std = float('nan'), float('nan')
+
+            results.append({
+                "method": method,
+                "degree": degree,
+                "fitted": ufun.fitted,
+                "name": name,
+                "n_outcomes": len(outcomes),
+                "fraction": fraction,
+                "white_noise": w,
+                "uniform_noise": u,
+                "ranking_error": rerror,
+                "value_error_mean": verror_mean,
+                "value_error_std": verror_std,
+                "duration": duration,
+            })
+            print(f"{i}/{n_ufuns}: {name}:{method}({degree}) "
+                  f"(fraction:{fraction:0.02}, noise: {w}-{u}, {_}/{__})"
+                  f" DONE (r-error: {rerror:4.02%}, v-error: {verror_mean:4.02%}"
+                  f"[std.dev. {verror_std:4.02%}]) in {duration}ns", flush=True)
+    return results
+
+
 @cli.command(help="Evaluates a Rank Learner")
 @click.option(
     "--outcomes",
@@ -183,6 +237,11 @@ def gp(
     type=(int, int),
     help='Degrees to try: min max',
 )
+@click.option(
+    "--serial/--parallel",
+    default=True,
+    help="run serially or in parallel"
+)
 def rank(
         outcomes=1000,
         fractions=(0.0, 1.0, 10),
@@ -191,63 +250,73 @@ def rank(
         white_noise=None,
         uniform_noise=None,
         degrees=(2, 3),
+        serial=True,
 ):
+    global ufuns
+    global issues
     if white_noise is None:
         white_noise = (0.0, 0.0, 1)
     if uniform_noise is None:
         uniform_noise = (0.0, 0.0, 1)
     ufuns, names, issues = generate_genius_ufuns(max_n_outcomes=outcomes)
-    results = []
-    for i, (gt, name, issue_list) in enumerate(zip(ufuns, names, issues)):
-        outcomes = Issue.enumerate(issue_list, astype=tuple)
-        for fraction in np.linspace(*fractions):
-            for w in np.linspace(*white_noise):
-                for u in np.linspace(*uniform_noise):
-                    for degree in degrees:
-                        for _ in range(n_rankings_per_fraction):
-                            if fraction in (0.0, 1.0) and _ > 0:
-                                continue
-                            for __ in range(n_trials_per_ranking):
-                                for method in ("errors", "error_sums", "differences"):
-                                    print(f"{i}/{len(ufuns)}: {name}:{method}({degree}) "
-                                          f"(fraction:{fraction:0.02}, noise: {w}-{u}, {_}/{__})", end=""
-                                          , flush=True)
-                                    ranking = generate_ranking(ufun=gt, outcomes=outcomes
-                                                               , uniform_noise=u, white_noise=w
-                                                               , fraction=fraction)
-                                    if len(ranking) < 2:
-                                        print(" Cancelled (too small fraction)")
-                                        continue
-                                    ufun = RankingLAPUfunLearner(issues=issue_list, outcomes=outcomes, kind=method
-                                                                 , degree=degree)
-                                    strt = time.perf_counter_ns()
-                                    ufun.fit(ranking)
-                                    duration = time.perf_counter_ns() - strt
-                                    if ufun.fitted:
-                                        rerror = ufun.ranking_error(gt)
-                                        verror_mean, verror_std = ufun.value_error(gt)
-                                    else:
-                                        rerror = float('nan')
-                                        verror_mean, verror_std = float('nan'), float('nan')
-
-                                    results.append({
-                                        "method": method,
-                                        "degree": degree,
-                                        "fitted": ufun.fitted,
-                                        "name": name,
-                                        "n_outcomes": len(outcomes),
-                                        "fraction": fraction,
-                                        "white_noise": w,
-                                        "uniform_noise": u,
-                                        "ranking_error": rerror,
-                                        "value_error_mean": verror_mean,
-                                        "value_error_std": verror_std,
-                                        "duration": duration,
-                                    })
-                                    print(f" DONE (r-error: {rerror:4.02%}, v-error: {verror_mean:4.02%}"
-                                          f"[std.dev. {verror_std:4.02%}]) in {duration}ns")
-        data = pd.DataFrame(data=results)
-        data.to_csv(os.path.expanduser("~/code/projects/uneg/data/accuracy.csv"), index=None, index_label='')
+    n_ufuns = len(ufuns)
+    methods = ("errors", "error_sums", "differences")
+    results_file_name = os.path.expanduser("~/code/projects/uneg/data/accuracy.csv")
+    n_all = 0
+    if serial:
+        for i, (gt, name, issue_list) in enumerate(zip(ufuns, names, issues)):
+            outcomes = Issue.enumerate(issue_list, astype=tuple)
+            for fraction in np.linspace(*fractions):
+                k = int(fraction * len(outcomes) + 0.5)
+                if k < 2:
+                    print(f"{i}/{len(ufuns)}: {name}: "
+                          f"(fraction:{fraction:0.02} Cancelled (too small fraction)", flush=True)
+                    continue
+                n_rankings = int(math.factorial(len(outcomes)) / (math.factorial(len(outcomes) - k) * math.factorial(k)))
+                n_rankings_to_run = min((n_rankings_per_fraction, n_rankings))
+                for w in np.linspace(*white_noise):
+                    for u in np.linspace(*uniform_noise):
+                        for method in methods:
+                            for degree in degrees:
+                                    results = evaluate_ranking(n_ufuns, name, method, degree, fraction, outcomes, u, w
+                                                 , n_rankings_to_run, n_trials_per_ranking, results_file_name, i)
+                                    add_records(results_file_name, pd.DataFrame(data=results))
+    else:
+        executor = ProcessPoolExecutor(max_workers=None)
+        future_results = []
+        for i, (gt, name, issue_list) in enumerate(zip(ufuns, names, issues)):
+            outcomes = Issue.enumerate(issue_list, astype=tuple)
+            for fraction in np.linspace(*fractions):
+                k = int(fraction * len(outcomes) + 0.5)
+                if k < 2:
+                    print(f"{i}/{len(ufuns)}: {name}: "
+                          f"(fraction:{fraction:0.02} Cancelled (too small fraction)", flush=True)
+                    continue
+                n_rankings = int(math.factorial(len(outcomes)) / (math.factorial(len(outcomes) - k) * math.factorial(k)))
+                n_rankings_to_run = min((n_rankings_per_fraction, n_rankings))
+                for w in np.linspace(*white_noise):
+                    for u in np.linspace(*uniform_noise):
+                        for method in methods:
+                            for degree in degrees:
+                                future_results.append(
+                                    executor.submit(
+                                        evaluate_ranking,
+                                        n_ufuns, name, method, degree, fraction, outcomes, u, w
+                                        , n_rankings_to_run, n_trials_per_ranking, results_file_name, i,
+                                    )
+                                )
+                                n_all += 1
+        print(f"Submitted all processes ({n_all})")
+        for j, future in enumerate(as_completed(future_results)):
+            try:
+                results = future.result()
+                add_records(results_file_name, pd.DataFrame(data=results))
+            except TimeoutError:
+                print("Tournament timed-out")
+                break
+            except Exception as e:
+                print(traceback.format_exc())
+                print(e)
 
 
 if __name__ == "__main__":
