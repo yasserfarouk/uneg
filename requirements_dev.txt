@@ -25,3 +25,4 @@ MarkupSafe
 sphinxcontrib-fulltoc
 
 pytest>=3.4.1
+negmas
