@@ -33,11 +33,13 @@ __all__ = [
     "fit_gp",
     "ranking",
     "partial_ranking",
-    "partial"
+    "partial",
 ]
 
 
-def generate_genius_ufuns_1d(folder=os.path.expanduser("~/datasets/genius/1d"), max_n_outcomes=None) -> List[np.array]:
+def generate_genius_ufuns_1d(
+    folder=os.path.expanduser("~/datasets/genius/1d"), max_n_outcomes=None
+) -> List[np.array]:
     ufuns = []
     folder = os.path.abspath(folder)
     for dir in sorted(os.listdir(folder)):
@@ -54,8 +56,9 @@ def generate_genius_ufuns_1d(folder=os.path.expanduser("~/datasets/genius/1d"), 
     return ufuns
 
 
-def generate_genius_ufuns(folder=os.path.expanduser("~/datasets/genius/nd")
-                          , max_n_outcomes=None) -> Tuple[List[np.array], List[str], List[List[negmas.Issue]]]:
+def generate_genius_ufuns(
+    folder=os.path.expanduser("~/datasets/genius/nd"), max_n_outcomes=None
+) -> Tuple[List[np.array], List[str], List[List[negmas.Issue]]]:
     folder = os.path.abspath(folder)
     names, issue_lists, ufuns = [], [], []
     for dir in sorted(os.listdir(folder)):
@@ -65,7 +68,10 @@ def generate_genius_ufuns(folder=os.path.expanduser("~/datasets/genius/nd")
         if max_n_outcomes is not None and int(dir[:6]) > max_n_outcomes:
             continue
         mechanism, agent_info, issues = negmas.load_genius_domain_from_folder(
-            folder_name=full_name, ignore_discount=True, ignore_reserved=True, force_numeric=True
+            folder_name=full_name,
+            ignore_discount=True,
+            ignore_reserved=True,
+            force_numeric=True,
         )
         for negotiator in agent_info:
             ufuns.append(negotiator["ufun"])

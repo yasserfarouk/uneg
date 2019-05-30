@@ -18,7 +18,11 @@ import click
 
 scipy.random.seed(0)
 from uneg.utils import *
-from uneg.learners import ChuIndexGPUfun, CompressRegressIndexUfun
+from uneg.learners import (
+    ChuIndexGPUfun,
+    CompressRegressIndexUfun,
+    RankingProjectLAPUfunLearner,
+)
 import numpy as np
 import pandas as pd
 from uneg.learners import RankingLAPUfunLearner
@@ -32,18 +36,18 @@ def cli():
 
 @cli.command(help="Evaluates GP based ufun learner")
 def gp(
-        genius_ufuns=True,
-        sigma_generator=0.0,
-        n_trials=100,  # only used with random ufuns
-        n_outcomes=100,  # interpreted as max_n_outcomes for genius ufuns
-        n_comparisons_per_outcome=2,
-        compress_only=True,
-        kernel=None,
-        learn_sigma=False,
-        use_their_map=True,
-        use_our_map=False,
-        sigma_learner=0.0,
-        tol=1e-3,
+    genius_ufuns=True,
+    sigma_generator=0.0,
+    n_trials=100,  # only used with random ufuns
+    n_outcomes=100,  # interpreted as max_n_outcomes for genius ufuns
+    n_comparisons_per_outcome=2,
+    compress_only=True,
+    kernel=None,
+    learn_sigma=False,
+    use_their_map=True,
+    use_our_map=False,
+    sigma_learner=0.0,
+    tol=1e-3,
 ):
     if kernel is None:
         kernel = Matern()
@@ -68,7 +72,7 @@ def gp(
     ]
 
     for trial, (gt_ufun, (noisy_comparisons, gt_comparisons)) in enumerate(
-            zip(ufuns, comparisons)
+        zip(ufuns, comparisons)
     ):
         n_real_outcomes = len(gt_ufun)
         ws = extract_ws(noisy_comparisons)
@@ -137,22 +141,45 @@ def gp(
 ufuns, issues = [], []
 
 
-def evaluate_ranking(n_ufuns, name, method, degree, fraction, outcomes, u, w
-                     , n_rankings_to_run, n_trials_per_ranking, results_file_name, i):
+def evaluate_ranking(
+    n_ufuns,
+    name,
+    method,
+    degree,
+    fraction,
+    outcomes,
+    u,
+    w,
+    n_rankings_to_run,
+    n_trials_per_ranking,
+    results_file_name,
+    i,
+):
+    learner = RankingLAPUfunLearner
+    opt_method = method
+    if method.startswith("project>"):
+        opt_method = ">".join(method.split(">")[1:])
+        learner = RankingProjectLAPUfunLearner
+
     gt, issue_list = ufuns[i], issues[i]
     results = []
     for _ in range(n_rankings_to_run):
         if fraction in (0.0, 1.0) and _ > 0:
             continue
         for __ in range(n_trials_per_ranking):
-            ranking = generate_ranking(ufun=gt, outcomes=outcomes
-                                       , uniform_noise=u, white_noise=w
-                                       , fraction=fraction)
+            ranking = generate_ranking(
+                ufun=gt,
+                outcomes=outcomes,
+                uniform_noise=u,
+                white_noise=w,
+                fraction=fraction,
+            )
             if len(ranking) < 2:
                 print(" Cancelled (too small fraction)")
                 continue
-            ufun = RankingLAPUfunLearner(issues=issue_list, outcomes=outcomes, kind=method
-                                         , degree=degree)
+            ufun = learner(
+                issues=issue_list, outcomes=outcomes, kind=opt_method, degree=degree
+            )
             strt = time.perf_counter()
             ufun.fit(ranking)
             duration = time.perf_counter() - strt
@@ -160,57 +187,57 @@ def evaluate_ranking(n_ufuns, name, method, degree, fraction, outcomes, u, w
                 rerror = ufun.ranking_error(gt)
                 verror_mean, verror_std = ufun.value_error(gt)
             else:
-                rerror = float('nan')
-                verror_mean, verror_std = float('nan'), float('nan')
+                rerror = float("nan")
+                verror_mean, verror_std = float("nan"), float("nan")
 
-            results.append({
-                "method": method,
-                "degree": degree,
-                "fitted": ufun.fitted,
-                "name": name,
-                "n_outcomes": len(outcomes),
-                "fraction": fraction,
-                "white_noise": w,
-                "uniform_noise": u,
-                "ranking_error": rerror,
-                "value_error_mean": verror_mean,
-                "value_error_std": verror_std,
-                "duration": duration,
-            })
-            print(f"{i}/{n_ufuns}: {name}:{method}({degree}) "
-                  f"(fraction:{fraction:0.02}, noise: {w}-{u}, {_}/{__})"
-                  f" DONE (r-error: {rerror:4.02%}, v-error: {verror_mean:4.02%}"
-                  f"[std.dev. {verror_std:4.02%}]) in {duration}ns", flush=True)
+            results.append(
+                {
+                    "method": method,
+                    "degree": degree,
+                    "fitted": ufun.fitted,
+                    "name": name,
+                    "n_outcomes": len(outcomes),
+                    "fraction": fraction,
+                    "white_noise": w,
+                    "uniform_noise": u,
+                    "ranking_error": rerror,
+                    "value_error_mean": verror_mean,
+                    "value_error_std": verror_std,
+                    "duration": duration,
+                }
+            )
+            print(
+                f"{i}/{n_ufuns}: {name}:{method}({degree}) "
+                f"(fraction:{fraction:0.02}, noise: {w}-{u}, {_}/{__})"
+                f" DONE (r-error: {rerror:4.02%}, v-error: {verror_mean:4.02%}"
+                f"[std.dev. {verror_std:4.02%}]) in {duration}ns",
+                flush=True,
+            )
     return results
 
 
 @cli.command(help="Evaluates a Rank Learner")
 @click.option(
-    "--outcomes",
-    "-o",
-    default=1000,
-    help='The maximum allowed number of outcomes',
+    "--outcomes", "-o", default=1000, help="The maximum allowed number of outcomes"
 )
 @click.option(
     "--fractions",
     "-f",
     default=(0.0, 1.0, 10),
     type=(float, float, int),
-    help='Fractions as a tuple: start end count.',
+    help="Fractions as a tuple: start end count.",
 )
 @click.option(
     "--n-rankings-per-fraction",
-    "--rankings"
-    "-r",
+    "--rankings" "-r",
     default=5,
-    help='Number of rankings per fraction',
+    help="Number of rankings per fraction",
 )
 @click.option(
     "--n-trials-per-ranking",
-    "--trials"
-    "-t",
+    "--trials" "-t",
     default=1,
-    help='Number of trials per ranking',
+    help="Number of trials per ranking",
 )
 @click.option(
     "--white-noise",
@@ -220,7 +247,7 @@ def evaluate_ranking(n_ufuns, name, method, degree, fraction, outcomes, u, w
     "-g",
     default=(0.0, 0.0, 1),
     type=(float, float, int),
-    help='White noise: start end number',
+    help="White noise: start end number",
 )
 @click.option(
     "--uniform-noise",
@@ -228,29 +255,38 @@ def evaluate_ranking(n_ufuns, name, method, degree, fraction, outcomes, u, w
     "-u",
     default=(0.0, 0.0, 1),
     type=(float, float, int),
-    help='Uniform noise: start end number',
+    help="Uniform noise: start end number",
 )
 @click.option(
-    "--degrees",
-    "-d",
-    default=(2, 3),
-    type=(int, int),
-    help='Degrees to try: min max',
+    "--degrees", "-d", default=(2, 3), type=(int, int), help="Degrees to try: min max"
 )
 @click.option(
-    "--serial/--parallel",
-    default=True,
-    help="run serially or in parallel"
+    "--methods",
+    "-m",
+    default=(
+        "errors",
+        "error_sums",
+        "differences",
+        "constraints",
+        "project>errors",
+        "project>error_sums",
+        "project>differences",
+    ),
+    multiple=True,
+    type=str,
+    help="Methods to try. Options are: errors, error_sums, differences, constraints",
 )
+@click.option("--serial/--parallel", default=True, help="run serially or in parallel")
 def rank(
-        outcomes=1000,
-        fractions=(0.0, 1.0, 10),
-        n_rankings_per_fraction=5,
-        n_trials_per_ranking=1,
-        white_noise=None,
-        uniform_noise=None,
-        degrees=(2, 3),
-        serial=True,
+    outcomes,
+    fractions,
+    n_rankings_per_fraction,
+    n_trials_per_ranking,
+    white_noise,
+    uniform_noise,
+    degrees,
+    serial,
+    methods,
 ):
     global ufuns
     global issues
@@ -260,7 +296,6 @@ def rank(
         uniform_noise = (0.0, 0.0, 1)
     ufuns, names, issues = generate_genius_ufuns(max_n_outcomes=outcomes)
     n_ufuns = len(ufuns)
-    methods = ("errors", "error_sums", "differences")
     results_file_name = os.path.expanduser("~/code/projects/uneg/data/accuracy.csv")
     n_all = 0
     if serial:
@@ -269,18 +304,38 @@ def rank(
             for fraction in np.linspace(*fractions):
                 k = int(fraction * len(outcomes) + 0.5)
                 if k < 2:
-                    print(f"{i}/{len(ufuns)}: {name}: "
-                          f"(fraction:{fraction:0.02} Cancelled (too small fraction)", flush=True)
+                    print(
+                        f"{i}/{len(ufuns)}: {name}: "
+                        f"(fraction:{fraction:0.02} Cancelled (too small fraction)",
+                        flush=True,
+                    )
                     continue
-                n_rankings = int(math.factorial(len(outcomes)) / (math.factorial(len(outcomes) - k) * math.factorial(k)))
+                n_rankings = int(
+                    math.factorial(len(outcomes))
+                    / (math.factorial(len(outcomes) - k) * math.factorial(k))
+                )
                 n_rankings_to_run = min((n_rankings_per_fraction, n_rankings))
                 for w in np.linspace(*white_noise):
                     for u in np.linspace(*uniform_noise):
                         for method in methods:
                             for degree in degrees:
-                                    results = evaluate_ranking(n_ufuns, name, method, degree, fraction, outcomes, u, w
-                                                 , n_rankings_to_run, n_trials_per_ranking, results_file_name, i)
-                                    add_records(results_file_name, pd.DataFrame(data=results))
+                                results = evaluate_ranking(
+                                    n_ufuns,
+                                    name,
+                                    method,
+                                    degree,
+                                    fraction,
+                                    outcomes,
+                                    u,
+                                    w,
+                                    n_rankings_to_run,
+                                    n_trials_per_ranking,
+                                    results_file_name,
+                                    i,
+                                )
+                                add_records(
+                                    results_file_name, pd.DataFrame(data=results)
+                                )
     else:
         executor = ProcessPoolExecutor(max_workers=None)
         future_results = []
@@ -289,10 +344,16 @@ def rank(
             for fraction in np.linspace(*fractions):
                 k = int(fraction * len(outcomes) + 0.5)
                 if k < 2:
-                    print(f"{i}/{len(ufuns)}: {name}: "
-                          f"(fraction:{fraction:0.02} Cancelled (too small fraction)", flush=True)
+                    print(
+                        f"{i}/{len(ufuns)}: {name}: "
+                        f"(fraction:{fraction:0.02} Cancelled (too small fraction)",
+                        flush=True,
+                    )
                     continue
-                n_rankings = int(math.factorial(len(outcomes)) / (math.factorial(len(outcomes) - k) * math.factorial(k)))
+                n_rankings = int(
+                    math.factorial(len(outcomes))
+                    / (math.factorial(len(outcomes) - k) * math.factorial(k))
+                )
                 n_rankings_to_run = min((n_rankings_per_fraction, n_rankings))
                 for w in np.linspace(*white_noise):
                     for u in np.linspace(*uniform_noise):
@@ -301,8 +362,18 @@ def rank(
                                 future_results.append(
                                     executor.submit(
                                         evaluate_ranking,
-                                        n_ufuns, name, method, degree, fraction, outcomes, u, w
-                                        , n_rankings_to_run, n_trials_per_ranking, results_file_name, i,
+                                        n_ufuns,
+                                        name,
+                                        method,
+                                        degree,
+                                        fraction,
+                                        outcomes,
+                                        u,
+                                        w,
+                                        n_rankings_to_run,
+                                        n_trials_per_ranking,
+                                        results_file_name,
+                                        i,
                                     )
                                 )
                                 n_all += 1

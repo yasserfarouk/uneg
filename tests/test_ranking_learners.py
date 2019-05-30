@@ -1,7 +1,7 @@
 import pytest
 from negmas import Issue, MappingUtilityFunction
 
-from uneg.learners import RankingLAPUfunLearner, _ufun_quality
+from uneg.learners import RankingLAPUfunLearner, _ufun_objective
 
 
 def test_lap_ufun_full_ranking():
@@ -59,7 +59,7 @@ def test_ufun_quality_error_sums(kind):
     ]
     ufun = RankingLAPUfunLearner(issues=issues, degree=1, kind=kind)
     assert (
-        _ufun_quality(
+        _ufun_objective(
             [0.2, -0.45],
             ranking=full_ranking,
             fs=ufun.fs,
@@ -70,7 +70,7 @@ def test_ufun_quality_error_sums(kind):
         == 0.0
     )
     assert (
-        _ufun_quality(
+        _ufun_objective(
             [0.2, 0.4],
             ranking=full_ranking,
             fs=ufun.fs,

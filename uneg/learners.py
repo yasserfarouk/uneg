@@ -1,5 +1,8 @@
+import copy
+import functools
 import itertools
 from abc import ABC, abstractmethod
+from math import sqrt
 from typing import List, Tuple, Iterable, Optional, Union, Callable, Any, Dict
 import numpy as np
 from negmas import (
@@ -40,9 +43,16 @@ __all__ = [
     "CompressRegressIndexUfun",
     "RankingLAPUfunLearner",
     "IssueFunction",
-    "linear", "quadratic", "polynomial", "unbiased_polynomial",
-    "RankingUfunLearner"
+    "linear",
+    "quadratic",
+    "polynomial",
+    "unbiased_polynomial",
+    "RankingUfunLearner",
+    "RankingProjectLAPUfunLearner",
+    "distributions_from_vals",
 ]
+
+
 class ComparisonsUfun(UtilityFunction):
     """A ufun learned from a list of comparisons.
 
@@ -315,14 +325,26 @@ class CompressRegressIndexUfun(IndexGPUfun):
 
 class RankingUfunLearner(UtilityFunction):
     """A utility function learnable from a full ordering of a subset of the outcomes"""
-    def __init__(self, *args, issues: Optional[List[Issue]], outcomes: List[Outcome] = None, **kwargs):
+
+    def __init__(
+        self,
+        *args,
+        issues: Optional[List[Issue]],
+        outcomes: List[Outcome] = None,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         if issues is None and outcomes is None:
             raise ValueError("Neither issues nor outcomes was given")
         self.issues = issues
         if outcomes is not None:
             self.outcomes = [
-                outcome.values() if isinstance(outcome, dict) else outcome if isinstance(outcome, tuple) else outcome.astuple() for outcome in outcomes
+                outcome.values()
+                if isinstance(outcome, dict)
+                else outcome
+                if isinstance(outcome, tuple)
+                else outcome.astuple()
+                for outcome in outcomes
             ]
         else:
             self.outcomes = Issue.enumerate(issues=issues, astype=tuple)
@@ -379,7 +401,7 @@ class RankingUfunLearner(UtilityFunction):
         mx, mn = data.max(axis=0), data.min(axis=0)
         data = (data - mn) / (mx - mn)
         err = (data[:, 0] - data[:, 1]) ** 2
-        return float(np.mean(err)), float(np.std(err))
+        return float(np.sqrt(np.mean(err))), float(np.std(err))
 
     @abstractmethod
     def fit(self, ranking_list: List[Outcome]) -> UtilityFunction:
@@ -413,7 +435,7 @@ def unbiased_polynomial(x, theta):
     return sum(alpha * x ** (i + 1) for i, alpha in enumerate(theta))
 
 
-def _ufun_quality(
+def _ufun_objective(
     theta: List[float],
     ranking: List[Outcome],
     fs: List[IssueFunction],
@@ -463,7 +485,63 @@ def _ufun_quality(
         )
     elif kind == "differences":
         rng = max(fvals) - min(fvals)
-        return sum((f2 - f1) / rng if f1 < f2 else 0.1 * (f2 - f1) / rng for f1, f2 in zip(fvals[:-1], fvals[1:]))
+        return sum(
+            (f2 - f1) / rng if f1 < f2 else 0.1 * (f2 - f1) / rng
+            for f1, f2 in zip(fvals[:-1], fvals[1:])
+        )
+    elif kind == "constraint":
+        return 1
+    else:
+        raise ValueError(
+            f"Unknown kind: {kind}. Supported kinds are: errors, error_sums, differences"
+        )
+
+
+def _ufun_constraint(
+    theta: List[float],
+    o1: Outcome,
+    o2: Outcome,
+    fs: List[IssueFunction],
+    n_params: List[int],
+    tolerance=0.0,
+    kind: str = "constraints",
+):
+    """
+
+    Args:
+        theta:
+        o1:
+        o2:
+        fs:
+        n_params:
+        tolerance:
+        kind: The kind of quality to measure:
+
+            - errors : the number of errors in the ranking
+            - error_sizes: the sum of error sizes
+            - differences: The sum of differences
+
+    Returns:
+
+    """
+    ranking = (o1, o2)
+    m = len(fs)
+    param_ranges = [(0, 0)] * m
+    nxt_param = 0
+    for i, n_p in enumerate(n_params):
+        param_ranges[i] = (nxt_param, nxt_param + n_p)
+        nxt_param += n_p
+    fvals = [
+        sum(
+            f(outcome[j], theta[range_[0] : range_[1]])
+            for j, (f, range_) in enumerate(zip(fs, param_ranges))
+        )
+        for outcome in ranking
+    ]
+    if kind in ("errors", "error_sums", "differences"):
+        return 1
+    elif kind == "constraints":
+        return -1 if fvals[0] + tolerance < fvals[1] else 1
     else:
         raise ValueError(
             f"Unknown kind: {kind}. Supported kinds are: errors, error_sums, differences"
@@ -489,7 +567,7 @@ class RankingLAPUfunLearner(RankingUfunLearner, UtilityFunction):
         issues: Optional[List[Issue]] = None,
         outcomes: List[Outcome] = None,
         degree: Union[int, List[int]] = 2,
-        kind="error_sums",
+        kind="constraints",
         tolerance: float = 0.0,
         learn_distributions: bool = False,
         **kwargs,
@@ -508,6 +586,7 @@ class RankingLAPUfunLearner(RankingUfunLearner, UtilityFunction):
         self.param_ranges = param_ranges
         self.result_ = None
         self.learn_distributions = learn_distributions
+        self.ranking_list = []
         self.fitted = False
         self.theta = np.random.randn(sum(self.n_params)) - 0.5
         uvals = [
@@ -520,6 +599,8 @@ class RankingLAPUfunLearner(RankingUfunLearner, UtilityFunction):
         self.uvals = dict(zip(self.outcomes, uvals))
 
     def fit(self, ranking_list: List[Outcome]):
+        self.ranking_list += ranking_list
+        ranking_list = self.ranking_list
         optimizer_options = {
             "disp": None,
             "maxcor": 10,
@@ -531,14 +612,45 @@ class RankingLAPUfunLearner(RankingUfunLearner, UtilityFunction):
             "iprint": -1,
             "maxls": 20,
         }
-        self.result_ = minimize(
-            _ufun_quality,
-            x0=self.theta,
-            args=(ranking_list, self.fs, self.n_params, self.tolerance, self.kind),
-            method="L-BFGS-B",
-            options=optimizer_options,
-            bounds=[(-1.0, 1)] * len(self.theta),
-        )
+        if self.kind == "constraints":
+            constraints = [
+                {
+                    "type": "ineq",
+                    "fun": _ufun_constraint,
+                    "args": (o1, o2, self.fs, self.n_params, self.tolerance, self.kind),
+                }
+                for o1, o2 in zip(ranking_list[:-1], ranking_list[1:])
+            ]
+            self.result_ = minimize(
+                lambda x: (sqrt(sum([_ * _ for _ in x]))) ** 2,
+                x0=self.theta,
+                method="COBYLA",  # "SLSQP"
+                bounds=[(-1.0, 1)] * len(self.theta),
+                constraints=constraints,
+                options={
+                    "rhobeg": 1.0,
+                    "maxiter": 1000,
+                    "disp": False,
+                    "catol": 0.0002,
+                },
+                # options={
+                #     "func": None,
+                #     "maxiter": 100,
+                #     "ftol": 1e-06,
+                #     "iprint": 1,
+                #     "disp": False,
+                #     "eps": 1.4901161193847656e-08,
+                # },
+            )
+        else:
+            self.result_ = minimize(
+                _ufun_objective,
+                x0=self.theta,
+                args=(ranking_list, self.fs, self.n_params, self.tolerance, self.kind),
+                method="L-BFGS-B",
+                options=optimizer_options,
+                bounds=[(-1.0, 1)] * len(self.theta),
+            )
         if self.result_.success:
             self.theta = self.result_.x
             uvals = [
@@ -549,38 +661,145 @@ class RankingLAPUfunLearner(RankingUfunLearner, UtilityFunction):
                 for offer in self.outcomes
             ]
             if self.learn_distributions:
-                ordered_vals = list(
-                    sorted(zip(self.outcomes, uvals), key=lambda x: x[1])
-                )
-                ordered_vals = (
-                    [
-                        (
-                            None,
-                            ordered_vals[0][1]
-                            - (ordered_vals[1][1] - ordered_vals[0][1]),
-                        )
-                    ]
-                    + ordered_vals
-                    + [
-                        (
-                            None,
-                            ordered_vals[-1][1]
-                            + (ordered_vals[-1][1] - ordered_vals[-2][1]),
-                        )
-                    ]
-                )
-                ranges = [
-                    (o2[1] / 2 + (o1[1] + o3[1]) / 4, (o3[1] - o1[1]) / 4)
-                    for o1, o2, o3 in zip(
-                        ordered_vals[:-2], ordered_vals[1:-1], ordered_vals[2:]
-                    )
-                ]
-                uvals = [
-                    Distribution(dtype="uniform", loc=r[0], scale=r[1]) for r in ranges
-                ]
-                self.uvals = dict(zip((_[0] for _ in ordered_vals[1:-1]), uvals))
+                self.uvals = distributions_from_vals(uvals, self.outcomes)
             else:
                 self.uvals = dict(zip(self.outcomes, uvals))
             self.fitted = True
             return True
         return False
+
+
+def distributions_from_vals(uvals, outcomes):
+    """
+    Creates uniform distributions around given values
+
+    Args:
+        uvals:
+        outcomes:
+
+    Returns:
+
+    """
+    ordered_vals = list(sorted(zip(outcomes, uvals), key=lambda x: x[1]))
+    ordered_vals = (
+        [(None, ordered_vals[0][1] - (ordered_vals[1][1] - ordered_vals[0][1]))]
+        + ordered_vals
+        + [(None, ordered_vals[-1][1] + (ordered_vals[-1][1] - ordered_vals[-2][1]))]
+    )
+    ranges = [
+        (o2[1] / 2 + (o1[1] + o3[1]) / 4, (o3[1] - o1[1]) / 4)
+        for o1, o2, o3 in zip(ordered_vals[:-2], ordered_vals[1:-1], ordered_vals[2:])
+    ]
+    uvals = [Distribution(dtype="uniform", loc=r[0], scale=r[1]) for r in ranges]
+    return dict(zip((_[0] for _ in ordered_vals[1:-1]), uvals))
+
+
+class RankingProjectLAPUfunLearner(RankingUfunLearner, UtilityFunction):
+    """Linearly Aggregated Polynomials after projection on issue space"""
+
+    def __call__(self, offer: Outcome) -> Optional[UtilityValue]:
+        if isinstance(offer, OutcomeType):
+            offer = offer.asdict()
+        if isinstance(offer, dict):
+            offer = (offer[n] for n in self.issue_names)
+        return self.uvals.get(offer, None)
+
+    def xml(self, issues: List[Issue]) -> str:
+        return "Cannot convert to xml"
+
+    def __init__(
+        self,
+        *args,
+        issues: Optional[List[Issue]] = None,
+        outcomes: List[Outcome] = None,
+        degree: Union[int, List[int]] = 2,
+        kind="error_sums",
+        tolerance: float = 0.0,
+        learn_distributions: bool = False,
+        **kwargs,
+    ):
+        super().__init__(*args, issues=issues, outcomes=outcomes, **kwargs)
+
+        self.n_params = [degree] * len(issues) if isinstance(degree, int) else degree
+        self.kind = kind
+        self.tolerance = tolerance
+        self.result_ = None
+        self.learn_distributions = learn_distributions
+        self.ranking_list = []
+        self._fitted = [False] * len(issues)
+        self.fitted = False
+        self.thetas = [np.random.randn(n) - 0.5 for n in self.n_params]
+        self.fs = [unbiased_polynomial] * len(issues)
+        uvals = [
+            sum(f(v, theta) for v, f, theta in zip(offer, self.fs, self.thetas))
+            for offer in self.outcomes
+        ]
+        self.uvals = dict(zip(self.outcomes, uvals))
+
+    def fit(self, ranking_list: List[Outcome]):
+        self.ranking_list += ranking_list
+        ranking_list = self.ranking_list
+        optimizer_options = {
+            "disp": None,
+            "maxcor": 10,
+            "ftol": 2.220446049250313e-09,
+            "gtol": 1e-05,
+            "eps": 1e-08,
+            "maxfun": 15000,
+            "maxiter": 15000,
+            "iprint": -1,
+            "maxls": 20,
+        }
+        self.result_ = []
+        for i, (issue, f, theta) in enumerate(
+            zip(self.issue_names, self.fs, self.thetas)
+        ):
+            n_params = len(theta)
+            if self.kind == "constraints":
+                constraints = [
+                    {
+                        "type": "ineq",
+                        "fun": _ufun_constraint,
+                        "args": (o1, o2, [f], [n_params], self.tolerance, self.kind),
+                    }
+                    for o1, o2 in zip(ranking_list[:-1], ranking_list[1:])
+                ]
+                result = minimize(
+                    lambda x: (sqrt(sum([_ * _ for _ in x]))) ** 2,
+                    x0=theta,
+                    method="COBYLA",  # "SLSQP"
+                    bounds=[(-1.0, 1)] * len(theta),
+                    constraints=constraints,
+                    options={
+                        "rhobeg": 1.0,
+                        "maxiter": 1000,
+                        "disp": False,
+                        "catol": 0.0002,
+                    },
+                )
+            else:
+                result = minimize(
+                    _ufun_objective,
+                    x0=theta,
+                    args=(ranking_list, [f], [n_params], self.tolerance, self.kind),
+                    method="L-BFGS-B",
+                    options=optimizer_options,
+                    bounds=[(-1.0, 1)] * len(theta),
+                )
+            self.result_.append(result)
+        if any(_.success for _ in self.result_):
+            for i, result in enumerate(self.result_):
+                self.thetas[i] = result.x
+                uvals = [
+                    sum(f(v, theta) for v, f, theta in zip(offer, self.fs, self.thetas))
+                    for offer in self.outcomes
+                ]
+                if self.learn_distributions:
+                    self.uvals = distributions_from_vals(
+                        uvals=uvals, outcomes=self.outcomes
+                    )
+                else:
+                    self.uvals = dict(zip(self.outcomes, uvals))
+                self._fitted[i] = True
+        self.fitted = all(self._fitted)
+        return self.fitted
