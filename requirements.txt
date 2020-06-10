@@ -36,5 +36,5 @@ toml>=0.10.0
 tqdm>=4.32.1
 typing>=3.6.6
 typing-extensions>=3.7.2
--e git+https://github.com/yasserfarouk/uneg.git@dd7e11dbffa2ae09fc2578c4c43831681d5210ef#egg=uneg
+-e .
 wcwidth>=0.1.7
