@@ -1,0 +1,8 @@
+{
+	"venvPath": "/Users/yasser/myvenvs",
+	"venv": "uneg",
+	"extraPaths": [
+		"/Users/yasser/code/projects/negmas"
+	],
+	"useLibraryCodeForTypes": true
+}
