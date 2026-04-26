@@ -1,0 +1,2 @@
+[console_scripts]
+uneg = uneg.scripts.app:cli

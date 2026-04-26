@@ -1,0 +1,7 @@
+Click>=6.0
+scikit-learn
+numpy
+pandas
+scipy
+pytest-runner
+negmas
